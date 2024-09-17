@@ -1,0 +1,261 @@
+def find_next_block(pack_state: PackingState, block_list, block_table, search_params, weight_list):
+    best_fitness = 0
+    best_block = block_list[0]
+    for block in block_list:
+        total_weight = sum([weight_list[i] * count for i, count in enumerate(block.require_list)])
+        if total_weight + sum([weight_list[i] * count for i, count in enumerate(pack_state.used_list)]) > search_params['max_weight']:
+            continue
+
+        space = pack_state.space_stack.top()
+        place = place_block(pack_state, block)
+        fitness = estimate(pack_state, block_table, search_params)
+        remove_block(pack_state, block, place, space)
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_block = block
+    return best_blockdef gen_simple_block(container, box_list, num_list, weight_list):
+    block_table = []
+    for box in box_list:
+        for nx in np.arange(num_list[box.type]) + 1:
+            for ny in np.arange(num_list[box.type] / nx) + 1:
+                for nz in np.arange(num_list[box.type] / nx / ny) + 1:
+                    if box.lx * nx <= container.lx and box.ly * ny <= container.ly and box.lz * nz <= container.lz:
+                        requires = np.full_like(num_list, 0)
+                        requires[box.type] = nx * ny * nz
+                        block_weight = nx * ny * nz * weight_list[box.type]
+                        block = Block(box.lx * nx, box.ly * ny, box.lz * nz, requires, block_weight)
+                        block.ax = box.lx * nx
+                        block.ay = box.ly * ny
+                        block.volume = box.lx * nx * box.ly * ny * box.lz * nz
+                        block.times = 0
+                        block_table.append(block)
+    return sorted(block_table, key=lambda x: x.volume, reverse=True)class Block:
+    def __init__(self, lx, ly, lz, require_list=np.ndarray([]), weight=0, children: list = None, direction=None):
+        children = [] if children is None else children
+        self.lx, self.ly, self.lz = lx, ly, lz
+        self.require_list = require_list
+        self.volume = 0
+        self.children = children
+        self.direction = direction
+        self.ax = 0
+        self.ay = 0
+        self.times = 0
+        self.fitness = 0
+        self.weight = weight  # 新增
+
+    def __str__(self):
+        return "lx: %s, ly: %s, lz: %s, volume: %s, ax: %s, ay: %s, times:%s, fitness: %s, require: %s, weight: %s, children: %s, direction: %s" % (
+            self.lx, self.ly, self.lz, self.volume, self.ax, self.ay, self.times, self.fitness, self.require_list, self.weight, self.children, self.direction)
+
+    def __eq__(self, other):
+        return self.lx == other.lx and self.ly == other.ly and self.lz == other.lz and self.ax == other.ax and (
+            self.ay == self.ay) and (np.array(self.require_list) == np.array(other.require_list)).all()
+
+    def __hash__(self):
+        return hash(",".join([
+            str(self.lx), str(self.ly), str(self.lz), str(self.ax), str(self.ay),
+            ",".join([str(r) for r in self.require_list])
+        ]))def gen_complex_block(container, box_list, num_list, weight_list):
+    block_table = gen_simple_block(container, box_list, num_list, weight_list)
+    for times in range(TIMES):
+        new_block_table = []
+        for i in np.arange(0, len(block_table)):
+            a = block_table[i]
+            for j in np.arange(0, len(block_table)):
+                if j == i:
+                    continue
+                b = block_table[j]
+                if a.times == times or b.times == times:
+                    c = Block(0, 0, 0)
+                    if a.ax == a.lx and b.ax == b.lx and a.lz == b.lz:
+                        c.direction = "x"
+                        c.ax = a.ax + b.ax
+                        c.ay = min(a.ay, b.ay)
+                        c.lx = a.lx + b.lx
+                        c.ly = max(a.ly, b.ly)
+                        c.lz = a.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+                    if a.ay == a.ly and b.ay == b.ly and a.lz == b.lz:
+                        c.direction = "y"
+                        c.ax = min(a.ax, b.ax)
+                        c.ay = a.ay + b.ay
+                        c.lx = max(a.lx, b.lx)
+                        c.ly = a.ly + b.ly
+                        c.lz = a.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+                    if a.ax >= b.lx and a.ay >= b.ly:
+                        c.direction = "z"
+                        c.ax = b.ax
+                        c.ay = b.ay
+                        c.lx = a.lx
+                        c.ly = a.ly
+                        c.lz = a.lz + b.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+        block_table = block_table + new_block_table
+        block_table = list(set(block_table))
+    return sorted(block_table, key=lambda x: x.volume, reverse=True)def place_block(pack_state: PackingState, block: Block):
+    space = pack_state.space_stack.pop()
+    pack_state.avail_list = (np.array(pack_state.avail_list) - np.array(block.require_list)).tolist()
+    pack_state.used_list = (np.array(pack_state.used_list) + np.array(block.require_list)).tolist()  # 新增
+    place = Place(space, block)
+    pack_state.plan_list.append(place)
+    pack_state.volume = pack_state.volume + block.volume
+    cuboid1, cuboid2, cuboid3 = gen_residual_space(space, block)
+    pack_state.space_stack.push(cuboid1, cuboid2, cuboid3)
+    return placeclass PackingState:
+    def __init__(self, plan_list: list = None, space_stack: Stack = Stack(), avail_list: list = None):
+        plan_list = [] if plan_list is None else plan_list
+        avail_list = [] if avail_list is None else avail_list
+        self.plan_list = plan_list
+        self.space_stack = space_stack
+        self.avail_list = avail_list
+        self.used_list = [0] * len(avail_list)  # 新增
+        self.volume = 0
+        self.volume_complete = 0def find_next_block(pack_state: PackingState, block_list, block_table, search_params, weight_list):
+    best_fitness = 0
+    best_block = block_list[0]
+    for block in block_list:
+        total_weight = sum([weight_list[i] * count for i, count in enumerate(block.require_list)])
+        if total_weight + sum([weight_list[i] * count for i, count in enumerate(pack_state.used_list)]) > search_params['max_weight']:
+            continue
+
+        space = pack_state.space_stack.top()
+        place = place_block(pack_state, block)
+        fitness = estimate(pack_state, block_table, search_params)
+        remove_block(pack_state, block, place, space)
+        if fitness > best_fitness:
+            best_fitness = fitness
+            best_block = block
+    return best_block
+
+def gen_simple_block(container, box_list, num_list, weight_list):
+    block_table = []
+    for box in box_list:
+        for nx in np.arange(num_list[box.type]) + 1:
+            for ny in np.arange(num_list[box.type] / nx) + 1:
+                for nz in np.arange(num_list[box.type] / nx / ny) + 1:
+                    if box.lx * nx <= container.lx and box.ly * ny <= container.ly and box.lz * nz <= container.lz:
+                        requires = np.full_like(num_list, 0)
+                        requires[box.type] = nx * ny * nz
+                        block_weight = nx * ny * nz * weight_list[box.type]
+                        block = Block(box.lx * nx, box.ly * ny, box.lz * nz, requires, block_weight)
+                        block.ax = box.lx * nx
+                        block.ay = box.ly * ny
+                        block.volume = box.lx * nx * box.ly * ny * box.lz * nz
+                        block.times = 0
+                        block_table.append(block)
+    return sorted(block_table, key=lambda x: x.volume, reverse=True)
+
+class Block:
+    def __init__(self, lx, ly, lz, require_list=np.ndarray([]), weight=0, children: list = None, direction=None):
+        children = [] if children is None else children
+        self.lx, self.ly, self.lz = lx, ly, lz
+        self.require_list = require_list
+        self.volume = 0
+        self.children = children
+        self.direction = direction
+        self.ax = 0
+        self.ay = 0
+        self.times = 0
+        self.fitness = 0
+        self.weight = weight  # 新增
+
+    def __str__(self):
+        return "lx: %s, ly: %s, lz: %s, volume: %s, ax: %s, ay: %s, times:%s, fitness: %s, require: %s, weight: %s, children: %s, direction: %s" % (
+            self.lx, self.ly, self.lz, self.volume, self.ax, self.ay, self.times, self.fitness, self.require_list, self.weight, self.children, self.direction)
+
+    def __eq__(self):
+        return self.lx == other.lx and self.ly == other.ly and self.lz == other.lz and self.ax == other.ax and (
+            self.ay == self.ay) and (np.array(self.require_list) == np.array(other.require_list)).all()
+
+    def __hash__(self):
+        return hash(",".join([
+            str(self.lx), str(self.ly), str(self.lz), str(self.ax), str(self.ay),
+            ",".join([str(r) for r in self.require_list])
+        ]))
+
+def gen_complex_block(container, box_list, num_list, weight_list):
+    block_table = gen_simple_block(container, box_list, num_list, weight_list)
+    for times in range(TIMES):
+        new_block_table = []
+        for i in np.arange(0, len(block_table)):
+            a = block_table[i]
+            for j in np.arange(0, len(block_table)):
+                if j == i:
+                    continue
+                b = block_table[j]
+                if a.times == times or b.times == times:
+                    c = Block(0, 0, 0)
+                    if a.ax == a.lx and b.ax == b.lx and a.lz == b.lz:
+                        c.direction = "x"
+                        c.ax = a.ax + b.ax
+                        c.ay = min(a.ay, b.ay)
+                        c.lx = a.lx + b.lx
+                        c.ly = max(a.ly, b.ly)
+                        c.lz = a.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+                    if a.ay == a.ly and b.ay == b.ly and a.lz == b.lz:
+                        c.direction = "y"
+                        c.ax = min(a.ax, b.ax)
+                        c.ay = a.ay + b.ay
+                        c.lx = max(a.lx, b.lx)
+                        c.ly = a.ly + b.ly
+                        c.lz = a.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+                    if a.ax >= b.lx and a.ay >= b.ly:
+                        c.direction = "z"
+                        c.ax = b.ax
+                        c.ay = b.ay
+                        c.lx = a.lx
+                        c.ly = a.ly
+                        c.lz = a.lz + b.lz
+                        c.weight = a.weight + b.weight  # 新增
+                        combine_common(a, b, c)
+                        if combine_common_check(c, container, num_list):
+                            new_block_table.append(c)
+                            continue
+        block_table = block_table + new_block_table
+        block_table = list(set(block_table))
+    return sorted(block_table, key=lambda x: x.volume, reverse=True)
+
+class PackingState:
+    def __init__(self, plan_list: list = None, space_stack: Stack = Stack(), avail_list: list = None):
+        plan_list = [] if plan_list is None else plan_list
+        avail_list = [] if avail_list is None else avail_list
+        self.plan_list = plan_list
+        self.space_stack = space_stack
+        self.avail_list = avail_list
+        self.used_list = [0] * len(avail_list)  # 新增
+        self.volume = 0
+        self.volume_complete = 0
+
+def place_block(pack_state: PackingState, block: Block):
+    space = pack_state.space_stack.pop()
+    pack_state.avail_list = (np.array(pack_state.avail_list) - np.array(block.require_list)).tolist()
+    pack_state.used_list = (np.array(pack_state.used_list) + np.array(block.require_list)).tolist()  # 新增
+    place = Place(space, block)
+    pack_state.plan_list.append(place)
+    pack_state.volume = pack_state.volume + block.volume
+    cuboid1, cuboid2, cuboid3 = gen_residual_space(space, block)
+    pack_state.space_stack.push(cuboid1, cuboid2, cuboid3)
+    return place

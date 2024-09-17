@@ -1,0 +1,11 @@
+numpy~=1.23.5
+matplotlib~=3.7.3
+python-dotenv~=1.0.1
+langchain==0.0.340
+openai==1.45.0
+llama_index==0.11.9
+astor~=0.8.1
+plotly==4.14.0
+gradio==4.44.0
+pandas~=2.2.2
+torch~=2.0.1+cu117
